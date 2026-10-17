@@ -31,25 +31,49 @@ An icon appears when a device connects and disappears when it disconnects. If no
 
 ## Install
 
-**Option 1: run from source**
+Download from the [**latest release**](https://github.com/wachirawit-kaewdang/battery-tray/releases/latest):
+
+- **`BatteryTray-x.y.z-setup.exe`**: recommended. Installs for your user only (no admin prompt), adds a Start menu entry, can start with Windows, and uninstalls cleanly from *Settings → Apps*.
+- **`BatteryTray-x.y.z-portable.zip`**: unzip anywhere and run `BatteryTray.exe`. Nothing is installed.
+
+Windows 10/11, 64-bit.
+
+### First run: "Windows protected your PC"
+
+The app isn't code-signed (signing certificates cost money every year), so Windows SmartScreen warns about it the first time. Click **More info → Run anyway**. You only have to do this once.
+
+If you'd rather check the download first:
+
+- Compare its hash with `SHA256SUMS.txt` from the same release: `Get-FileHash .\BatteryTray-1.0.0-setup.exe` in PowerShell.
+- Or skip the binaries and run from source (below). The whole app is one Python file.
+
+If your antivirus flags it, that's a known false positive with apps packaged by PyInstaller. Please open an issue saying which antivirus it was.
+
+### Using it
+
+Right-click any tray icon for *Refresh now*, *Start with Windows*, the log folder and *Quit*. Hover an icon to see the device name and level.
+
+> If Lamzu reads fail, close the Lamzu web hub tab. While it's connected it can hold the HID interface.
+
+### Run from source
 
 ```bat
 pip install -r requirements.txt
 pythonw battery_tray.pyw
 ```
 
-**Option 2: build an .exe**
+Quick check without the tray: `python battery_tray.pyw --once` lists every device it can read.
+
+### Build the release yourself
+
+Needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
 
 ```bat
 pip install -r requirements.txt pyinstaller
 build.bat
 ```
 
-This produces `dist\BatteryTray.exe`. Right-click any tray icon → *Start with Windows* to launch it at login. (An existing *LamzuBattery* autostart entry is carried over automatically.)
-
-Quick check without the tray: `python battery_tray.pyw --once` lists every device it can read.
-
-> If reads fail, close the Lamzu web hub tab. While it's connected it can hold the HID interface.
+This writes the installer, portable zip and `SHA256SUMS.txt` to `release\`. The version comes from `APP_VERSION` in `battery_tray.pyw`.
 
 ## How it works: reverse-engineering the protocol
 
@@ -81,7 +105,7 @@ Things I found along the way:
 
 Tested on a **Lamzu Maya X 8K** dongle, Windows 11. The Bluetooth and Xbox sources use standard Windows APIs, but haven't been tested yet with a connected device. A Bluetooth device only shows up if it reports its battery to Windows (if *Settings → Bluetooth & devices* shows a %, it will). Other 2.4 GHz mice (Logitech, Razer, etc.) each use their own protocol and would need their own reader like the Lamzu one.
 
-Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, open an issue with the output of:
+Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) with the output of:
 
 ```bat
 python -c "import hid; [print(hex(d['product_id']), d['product_string'], hex(d['usage_page'])) for d in hid.enumerate(0x373e)]"

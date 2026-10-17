@@ -36,6 +36,8 @@ RESUME_DELAY = 4        # give USB/Bluetooth a moment to come back after resume
 LOW_ALERTS = (20, 10, 5)  # notify once at each threshold until it charges again
 
 APP_NAME = "BatteryTray"
+APP_VERSION = "1.0.0"  # release.ps1 reads this; bump it before tagging a release
+PROJECT_URL = "https://github.com/wachirawit-kaewdang/battery-tray"
 OLD_APP_NAME = "LamzuBattery"  # autostart entry from the Lamzu-only version
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 THEME_KEY = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
@@ -554,6 +556,7 @@ class App:
             pystray.MenuItem("Refresh now", lambda: self.wake.set(), default=True),
             pystray.MenuItem("Start with Windows", toggle_autostart, checked=autostart_enabled),
             pystray.MenuItem("Open log folder", lambda: os.startfile(LOG_DIR)),
+            pystray.MenuItem(f"About / updates (v{APP_VERSION})", lambda: os.startfile(PROJECT_URL)),
             pystray.MenuItem("Quit", self.quit),
         )
 
@@ -616,7 +619,7 @@ def main():
     if not claim_single_instance():
         return  # already running
     setup_logging()
-    log.info("start (%s)", _launch_command())
+    log.info("start v%s (%s)", APP_VERSION, _launch_command())
     refresh_autostart_path()
     App().run()
 
