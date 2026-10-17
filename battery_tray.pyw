@@ -36,7 +36,7 @@ RESUME_DELAY = 4        # give USB/Bluetooth a moment to come back after resume
 LOW_ALERTS = (20, 10, 5)  # notify once at each threshold until it charges again
 
 APP_NAME = "BatteryTray"
-APP_VERSION = "1.0.0"  # release.ps1 reads this; bump it before tagging a release
+APP_VERSION = "1.1.0"  # release.ps1 reads this; bump it before tagging a release
 PROJECT_URL = "https://github.com/wachirawit-kaewdang/battery-tray"
 OLD_APP_NAME = "LamzuBattery"  # autostart entry from the Lamzu-only version
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"

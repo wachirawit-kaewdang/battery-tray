@@ -44,7 +44,7 @@ The app isn't code-signed (signing certificates cost money every year), so Windo
 
 If you'd rather check the download first:
 
-- Compare its hash with `SHA256SUMS.txt` from the same release: `Get-FileHash .\BatteryTray-1.0.0-setup.exe` in PowerShell.
+- Compare its hash with `SHA256SUMS.txt` from the same release: `Get-FileHash .\BatteryTray-x.y.z-setup.exe` in PowerShell.
 - Or skip the binaries and run from source (below). The whole app is one Python file.
 
 If your antivirus flags it, that's a known false positive with apps packaged by PyInstaller. Please open an issue saying which antivirus it was.
