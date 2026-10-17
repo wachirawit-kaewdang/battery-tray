@@ -1,8 +1,16 @@
-# Lamzu Battery Tray
+# Battery Tray
 
-A small Windows tray app that shows the battery level of a **Lamzu Maya X** wireless mouse and warns you before it dies.
+A small Windows tray app that shows the battery level of your wireless devices, one tray icon each, and warns you before they die. It started as a tray icon for a **Lamzu Maya X** mouse.
 
 Lamzu's own software is a web page (WebHID), so the only way to check battery was to open a browser tab. Windows can't show it either, since the mouse uses a 2.4 GHz dongle, not Bluetooth. This app reads the battery straight from the dongle and keeps it in your taskbar.
+
+Supported sources:
+
+- **Lamzu mice** over the 2.4 GHz dongle or USB cable (vendor protocol, see below)
+- **Bluetooth devices** that report battery to Windows: headsets, earbuds, mice, keyboards. These are the same values shown in *Settings → Bluetooth & devices*.
+- **Xbox controllers** via XInput. Windows only gives four levels (empty / low / medium / full), so these icons show a bar with no number.
+
+An icon appears when a device connects and disappears when it disconnects. If nothing is found, a single `?` icon stays so you still have the menu.
 
 <p align="center">
   <img src="docs/icons-dark.png" alt="Tray icon states on a dark taskbar">
@@ -14,7 +22,8 @@ Lamzu's own software is a web page (WebHID), so the only way to check battery wa
 
 - Battery % in the tray icon, colour-coded (green / amber at 25% / red at 10%)
 - Windows notification at **20%, 10% and 5%**: one each, re-armed after charging
-- Charging indicator when the mouse is on its cable
+- One icon per device; hover for its name and level
+- Charging indicator when the mouse is on its cable or a controller is wired
 - Tells "mouse asleep/off" apart from "battery empty", and keeps showing the last known level
 - Re-reads right after the PC wakes from sleep
 - Follows light/dark taskbar theme
@@ -26,7 +35,7 @@ Lamzu's own software is a web page (WebHID), so the only way to check battery wa
 
 ```bat
 pip install -r requirements.txt
-pythonw lamzu_tray.pyw
+pythonw battery_tray.pyw
 ```
 
 **Option 2: build an .exe**
@@ -36,9 +45,9 @@ pip install -r requirements.txt pyinstaller
 build.bat
 ```
 
-This produces `dist\LamzuBattery.exe`. Right-click the tray icon → *Start with Windows* to launch it at login.
+This produces `dist\BatteryTray.exe`. Right-click any tray icon → *Start with Windows* to launch it at login. (An existing *LamzuBattery* autostart entry is carried over automatically.)
 
-Quick check without the tray: `python lamzu_tray.pyw --once`
+Quick check without the tray: `python battery_tray.pyw --once` lists every device it can read.
 
 > If reads fail, close the Lamzu web hub tab. While it's connected it can hold the HID interface.
 
@@ -70,7 +79,9 @@ Things I found along the way:
 
 ## Compatibility
 
-Tested on a **Lamzu Maya X 8K** dongle, Windows 11. Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, open an issue with the output of:
+Tested on a **Lamzu Maya X 8K** dongle, Windows 11. The Bluetooth and Xbox sources use standard Windows APIs, but haven't been tested yet with a connected device. A Bluetooth device only shows up if it reports its battery to Windows (if *Settings → Bluetooth & devices* shows a %, it will). Other 2.4 GHz mice (Logitech, Razer, etc.) each use their own protocol and would need their own reader like the Lamzu one.
+
+Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, open an issue with the output of:
 
 ```bat
 python -c "import hid; [print(hex(d['product_id']), d['product_string'], hex(d['usage_page'])) for d in hid.enumerate(0x373e)]"

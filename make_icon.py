@@ -4,8 +4,8 @@ import importlib.util
 import os
 
 here = os.path.dirname(os.path.abspath(__file__))
-loader = importlib.machinery.SourceFileLoader("lamzu_tray", os.path.join(here, "lamzu_tray.pyw"))
-tray = importlib.util.module_from_spec(importlib.util.spec_from_loader("lamzu_tray", loader))
+loader = importlib.machinery.SourceFileLoader("battery_tray", os.path.join(here, "battery_tray.pyw"))
+tray = importlib.util.module_from_spec(importlib.util.spec_from_loader("battery_tray", loader))
 loader.exec_module(tray)
 
 img = tray.render_battery(80, tray.GREEN, bolt=True)
