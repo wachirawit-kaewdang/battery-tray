@@ -103,7 +103,7 @@ Things I found along the way:
 
 ## Compatibility
 
-Tested on a **Lamzu Maya X 8K** dongle, Windows 11. The Bluetooth and Xbox sources use standard Windows APIs, but haven't been tested yet with a connected device. A Bluetooth device only shows up if it reports its battery to Windows (if *Settings → Bluetooth & devices* shows a %, it will). Other 2.4 GHz mice (Logitech, Razer, etc.) each use their own protocol and would need their own reader like the Lamzu one.
+Tested on Windows 11 with a **Lamzu Maya X 8K** dongle and **EDIFIER X3 Lite** Bluetooth earbuds. The Xbox source uses the standard XInput API but hasn't been tested on hardware yet. A Bluetooth device only shows up if it reports its battery to Windows (if *Settings → Bluetooth & devices* shows a %, it will). Other 2.4 GHz mice (Logitech, Razer, etc.) each use their own protocol and would need their own reader like the Lamzu one.
 
 Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) with the output of:
 

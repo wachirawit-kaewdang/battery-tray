@@ -487,7 +487,9 @@ class TrayIcon:
         self.last: Reading | None = None
         self.last_ok: Reading | None = None
         self.last_ok_time = None
-        self.alerted = set()
+        # Kept on the App, not the icon, so it survives the device disconnecting:
+        # earbuds going in and out of their case shouldn't re-alert every time.
+        self.alerted = app.alerted.setdefault(key, set())
         self._ready = threading.Event()
         self.icon = pystray.Icon(f"{APP_NAME}-{key}", image, title, menu=app.menu(self))
         threading.Thread(target=self.icon.run, kwargs={"setup": self._setup},
@@ -548,6 +550,7 @@ class App:
         self.wake = threading.Event()
         self.stop = threading.Event()
         self.icons: dict[str, TrayIcon] = {}
+        self.alerted: dict[str, set] = {}  # per-device low-battery alerts already shown
 
     def menu(self, tray: TrayIcon):
         return pystray.Menu(
