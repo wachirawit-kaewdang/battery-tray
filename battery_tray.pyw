@@ -6,6 +6,8 @@ Sources:
   - Xbox controllers, via XInput (only 4 coarse levels: empty/low/medium/full)
   - Logitech devices on a Unifying/Lightspeed/Bolt receiver or USB cable, over HID++ 2.0
     (UNTESTED: written from public protocol docs, never run against real hardware)
+  - Razer wireless mice on their dongle or cable, over Razer's 90-byte feature reports
+    (UNTESTED: written from OpenRazer's protocol notes, never run against real hardware)
 
 Setup:  pip install hidapi pystray Pillow
 Run:    pythonw battery_tray.pyw          (no console window)
@@ -507,8 +509,144 @@ def find_logitech():
                                    and not f.key.endswith(f":{HIDPP_DIRECT}"))]
 
 
+# ---------------------------------------------------------------- Razer (90-byte reports), UNTESTED
+#
+# Written from OpenRazer's description of the protocol (the Linux driver), with no Razer
+# hardware to try it on. Every request is a 90-byte feature report:
+#   0 status | 1 transaction id | 2-3 remaining packets | 4 protocol | 5 data size
+#   6 command class | 7 command id | 8-87 arguments | 88 XOR of bytes 2-87 | 89 reserved
+# The reply comes back in the same layout, with the status byte filled in.
+
+RAZER_VID = 0x1532
+RAZER_REPORT_LEN = 90
+RAZER_TRANSACTION_IDS = (0x1F, 0x3F, 0xFF)  # depends on the model's generation; tried in order
+RAZER_CMD_BATTERY = (0x07, 0x80)   # argument 1 = battery level 0-255
+RAZER_CMD_CHARGING = (0x07, 0x84)  # argument 1 = 1 while charging
+RAZER_OK, RAZER_BUSY, RAZER_TIMEOUT = 0x02, 0x01, 0x04  # 0x04: dongle couldn't reach the mouse
+RAZER_REPLY_WAIT = 0.4  # dongles relay the request to the mouse over the air
+
+
+class RazerAsleep(Exception):
+    pass
+
+
+class RazerNoAnswer(Exception):
+    pass
+
+
+def _razer_packet(tid, cls, cmd, size=0x02):
+    p = [0] * RAZER_REPORT_LEN
+    p[1], p[5], p[6], p[7] = tid, size, cls, cmd
+    crc = 0
+    for b in p[2:88]:
+        crc ^= b
+    p[88] = crc
+    return [0x00] + p  # report ID 0
+
+
+def _razer_command(h, tid, cls, cmd):
+    """Send one command and wait for its reply. Returns the 80 argument bytes."""
+    h.send_feature_report(_razer_packet(tid, cls, cmd))
+    deadline = time.monotonic() + RAZER_REPLY_WAIT
+    while True:
+        time.sleep(0.02)
+        r = h.get_feature_report(0, RAZER_REPORT_LEN + 1)
+        if len(r) == RAZER_REPORT_LEN + 1:  # Windows prepends the report ID
+            r = r[1:]
+        if len(r) >= RAZER_REPORT_LEN and r[1] == tid and r[6] == cls and r[7] == cmd:
+            if r[0] == RAZER_OK:
+                return r[8:88]
+            if r[0] == RAZER_TIMEOUT:
+                raise RazerAsleep()
+            if r[0] != RAZER_BUSY:
+                raise RazerNoAnswer(f"status 0x{r[0]:02x}")  # failure / not supported
+        if time.monotonic() >= deadline:
+            raise RazerNoAnswer("no reply")
+
+
+def _razer_clean_name(product, pid):
+    name = re.sub(r"\s*\((wired|wireless)\)|\s+(dongle|receiver)$", "", product or "", flags=re.I).strip()
+    return name or f"Razer device {pid:04x}"
+
+
+_razer_tid: dict[int, int | None] = {}  # pid -> working transaction id, or None = no battery reply
+_razer_names: dict[str, str] = {}       # devices seen this run: show them as asleep instead of vanishing
+
+
+def _razer_read(pid, paths):
+    """Tries the device's HID collections (the wrong ones reject the report at once) with the
+    known transaction id, or each candidate the first time. Returns a Reading or None."""
+    tids = (_razer_tid[pid],) if pid in _razer_tid else RAZER_TRANSACTION_IDS
+    for path in paths:
+        h = hid.device()
+        try:
+            h.open_path(path)
+        except OSError:
+            continue
+        try:
+            for tid in tids:
+                try:
+                    level = _razer_command(h, tid, *RAZER_CMD_BATTERY)[1]
+                except RazerAsleep:
+                    _razer_tid[pid] = tid
+                    return Reading("asleep")
+                except (RazerNoAnswer, OSError):
+                    continue
+                try:
+                    charging = bool(_razer_command(h, tid, *RAZER_CMD_CHARGING)[1])
+                except (RazerAsleep, RazerNoAnswer, OSError):
+                    charging = False
+                if pid not in _razer_tid:
+                    log.info("Razer %04x: battery via transaction id 0x%02x [untested support]", pid, tid)
+                _razer_tid[pid] = tid
+                return Reading("ok", round(level * 100 / 255), charging)
+        finally:
+            h.close()
+    return None
+
+
+def find_razer():
+    devices = {}
+    for info in hid.enumerate(RAZER_VID, 0):
+        path = info["path"]
+        text = path.decode(errors="replace") if isinstance(path, bytes) else path
+        if "VID_1532&PID_" not in text.upper():
+            continue  # Bluetooth-connected: the Bluetooth source covers whatever Windows reports
+        d = devices.setdefault(info["product_id"], {"product": info.get("product_string"), "paths": []})
+        d["paths"].append((info.get("interface_number", 0), path))
+
+    out = []
+    for pid, d in devices.items():
+        if _razer_tid.get(pid, 0) is None:
+            continue  # probed before: no battery (wired-only mouse, keyboard, mousepad...)
+        key = f"razer:{pid:04x}"
+        name = _razer_clean_name(d["product"], pid)
+        via = "dongle" if re.search(r"dongle|receiver|wireless", d["product"] or "", re.I) else "cable"
+        r = _razer_read(pid, [p for _, p in sorted(d["paths"], key=lambda x: x[0])])
+        if r is None:
+            if key in _razer_names:
+                r = Reading("asleep")  # known device that stopped answering
+            elif pid not in _razer_tid:
+                _razer_tid[pid] = None
+                log.info("Razer %04x (%s): no battery reply, ignoring [untested support]", pid, name)
+                continue
+            else:
+                continue
+        r.via = via
+        _razer_names[key] = name
+        out.append(Found(key, name, r))
+    # A wireless mouse charging on its cable shows up twice (cable and dongle PIDs).
+    # Keep one per name: an answering one, preferring the cable for its charging info.
+    best = {}
+    for f in out:
+        rank = (f.reading.state == "ok", f.reading.via == "cable")
+        if f.name not in best or rank > best[f.name][0]:
+            best[f.name] = (rank, f)
+    return [f for _, f in best.values()]
+
+
 PROVIDERS = (("Lamzu", find_lamzu), ("Bluetooth", find_bluetooth), ("Xbox", find_xbox),
-             ("Logitech", find_logitech))
+             ("Logitech", find_logitech), ("Razer", find_razer))
 
 
 def find_all():

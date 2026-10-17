@@ -10,6 +10,7 @@ Supported sources:
 - **Bluetooth devices** that report battery to Windows: headsets, earbuds, mice, keyboards. These are the same values shown in *Settings → Bluetooth & devices*.
 - **Xbox controllers** via XInput. Windows only gives four levels (empty / low / medium / full), so these icons show a bar with no number.
 - **Logitech devices** on a Unifying, Lightspeed or Bolt receiver, or plugged in by USB (HID++ 2.0). ⚠️ **Untested:** written from the public protocol documentation without Logitech hardware. See [Compatibility](#compatibility).
+- **Razer wireless mice** on their HyperSpeed dongle or cable. ⚠️ **Untested:** written from OpenRazer's protocol notes without Razer hardware. See [Compatibility](#compatibility).
 
 An icon appears when a device connects and disappears when it disconnects. If nothing is found, a single `?` icon stays so you still have the menu.
 
@@ -110,8 +111,9 @@ Things I found along the way:
 | Bluetooth devices | ✅ Tested with EDIFIER X3 Lite earbuds |
 | Xbox controllers | ⚠️ Untested: standard XInput API |
 | Logitech (HID++ 2.0) | ⚠️ Untested: written from documentation, checked only against a simulator |
+| Razer wireless mice | ⚠️ Untested: written from OpenRazer's protocol notes, checked only against a simulator |
 
-A Bluetooth device only shows up if it reports its battery to Windows. If *Settings → Bluetooth & devices* shows a %, it will. Other brands' 2.4 GHz mice (Razer, SteelSeries, etc.) each use their own protocol and would need their own reader like the Lamzu one.
+A Bluetooth device only shows up if it reports its battery to Windows. If *Settings → Bluetooth & devices* shows a %, it will. Other brands' 2.4 GHz mice (SteelSeries, Glorious, Pulsar, etc.) each use their own protocol and would need their own reader like the Lamzu one.
 
 ### Logitech: help test it
 
@@ -122,6 +124,16 @@ The Logitech reader follows the HID++ 2.0 protocol as documented by Logitech and
 - G HUB or Logi Options+ running at the same time should be fine, since replies are tagged, but this is untested.
 
 If you have a Logitech mouse or keyboard, please [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) saying whether it worked. Include the output of `python battery_tray.pyw --once` and the `Logitech …` lines from the log (tray menu → *Open log folder*).
+
+### Razer: help test it
+
+The Razer reader uses the 90-byte feature-report protocol documented by the [OpenRazer](https://github.com/openrazer/openrazer) Linux driver. It sends command `07 80` (battery level, 0–255) and `07 84` (charging). Razer models use different transaction IDs (`0x1F`, `0x3F` or `0xFF`), so it tries each once and remembers the one that answers. `tests\razer_simulator.py` checks the logic against simulated devices, but it has never run against a real Razer mouse. Expected limits:
+
+- Only USB connections (HyperSpeed dongle or cable) are read. Razer mice in **Bluetooth** mode go through the Bluetooth source.
+- Devices without a battery (wired mice, keyboards, mousepads) are asked once, then ignored until the app restarts.
+- Razer Synapse polls the same reports. Running both at once could occasionally cause a missed reading (shown as asleep until the next check).
+
+If you have a Razer wireless mouse, please [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) saying whether it worked. Include the output of `python battery_tray.pyw --once` and the `Razer …` lines from the log.
 
 Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) with the output of:
 
