@@ -4,6 +4,8 @@ Sources:
   - Lamzu mouse (dongle or cable), over vendor HID
   - Bluetooth devices that report battery to Windows (headsets, mice, keyboards...)
   - Xbox controllers, via XInput (only 4 coarse levels: empty/low/medium/full)
+  - Logitech devices on a Unifying/Lightspeed/Bolt receiver or USB cable, over HID++ 2.0
+    (UNTESTED: written from public protocol docs, never run against real hardware)
 
 Setup:  pip install hidapi pystray Pillow
 Run:    pythonw battery_tray.pyw          (no console window)
@@ -16,11 +18,13 @@ Log file: %LOCALAPPDATA%\\BatteryTray\\battery.log
 import ctypes
 import logging
 import os
+import re
 import sys
 import threading
 import time
 import uuid
 import winreg
+import zlib
 from ctypes import wintypes
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
@@ -54,6 +58,7 @@ class Reading:
     via: str = ""           # "wireless" / "cable" / "bluetooth" / "wired"
     detail: str = ""
     coarse: str = ""        # Xbox: "empty"/"low"/"medium"/"full" instead of a real %
+    approx: bool = False    # % estimated (e.g. from battery voltage), shown with "~"
 
 
 @dataclass
@@ -271,7 +276,239 @@ def find_xbox():
     return out
 
 
-PROVIDERS = (("Lamzu", find_lamzu), ("Bluetooth", find_bluetooth), ("Xbox", find_xbox))
+# ---------------------------------------------------------------- Logitech (HID++ 2.0), UNTESTED
+#
+# Written from the public HID++ 2.0 documentation and Solaar's open-source implementation,
+# with no Logitech hardware to try it on. Every step logs, so a failure report can say
+# where it went wrong.
+
+LOGI_VID = 0x046D
+LOGI_RECEIVER_PIDS = {
+    0xC52B, 0xC532,                                          # Unifying
+    0xC517, 0xC526, 0xC52E, 0xC52F, 0xC531, 0xC534,          # Nano
+    0xC539, 0xC53A, 0xC53D, 0xC53F, 0xC541, 0xC545, 0xC547,  # Lightspeed
+    0xC548,                                                  # Bolt
+}
+HIDPP_PAGES = (0xFF00, 0xFF43)
+HIDPP_SHORT, HIDPP_LONG = 0x10, 0x11  # report IDs: 7-byte and 20-byte messages
+HIDPP_LONG_LEN = 20
+HIDPP_SW_ID = 0x0B         # our tag, so we can tell our replies from Options+ / G HUB traffic
+HIDPP_DIRECT = 0xFF        # device index of a device plugged in by USB rather than via a receiver
+HIDPP_RECEIVER_SLOTS = range(1, 7)
+HIDPP10_ERR_INVALID_SUBID = 0x01  # what an old HID++ 1.0 device answers to a 2.0 ping
+
+FEAT_NAME = 0x0005
+FEAT_BATTERY_STATUS = 0x1000   # % + charging status
+FEAT_BATTERY_VOLTAGE = 0x1001  # millivolts only (many G mice); % is estimated
+FEAT_UNIFIED_BATTERY = 0x1004  # newer devices: % and/or coarse level
+
+# Li-ion discharge curve (mV, %), the table Solaar uses for 0x1001 devices.
+_VOLTAGE_CURVE = ((4186, 100), (4067, 90), (3989, 80), (3922, 70), (3859, 60), (3811, 50),
+                  (3778, 40), (3751, 30), (3717, 20), (3671, 10), (3646, 5), (3579, 2), (3500, 0))
+_UNIFIED_LEVELS = ((0x08, "full", 100), (0x04, "good", 60), (0x02, "low", 20), (0x01, "critical", 5))
+
+
+class HidppError(Exception):
+    def __init__(self, code):
+        super().__init__(f"HID++ error 0x{code:02x}")
+        self.code = code
+
+
+class HidppTimeout(Exception):
+    pass
+
+
+class _HidppChannel:
+    """Requests go out as long reports and the replies come back long, except receiver-level
+    errors (empty slot, device out of range), which arrive as short reports on the other
+    HID collection. So both are opened and read."""
+
+    def __init__(self, long_path, short_path=None):
+        self._handles = []
+        self.long = self._open(long_path)
+        if short_path:
+            try:
+                self._open(short_path)
+            except OSError:
+                pass  # we'd only miss fast error replies and fall back to the timeout
+
+    def _open(self, path):
+        h = hid.device()
+        h.open_path(path)
+        h.set_nonblocking(1)  # read() with no timeout returns at once instead of blocking
+        self._handles.append(h)
+        return h
+
+    def close(self):
+        for h in self._handles:
+            h.close()
+
+    def request(self, dev, feat_idx, func, params=(), timeout=0.5):
+        for h in self._handles:  # drop notifications that piled up since the last request
+            while h.read(64):
+                pass
+        tag = (func << 4) | HIDPP_SW_ID
+        msg = [HIDPP_LONG, dev, feat_idx, tag, *params]
+        self.long.write(msg + [0] * (HIDPP_LONG_LEN - len(msg)))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for h in self._handles:
+                r = h.read(64, 10)
+                if len(r) < 7 or r[1] != dev:
+                    continue
+                if r[0] == HIDPP_LONG and r[2] == feat_idx and r[3] == tag:
+                    return r[4:]
+                if r[0] == HIDPP_LONG and r[2] == 0xFF and r[3] == feat_idx and r[4] == tag:
+                    raise HidppError(r[5])  # HID++ 2.0 error
+                if r[0] == HIDPP_SHORT and r[2] == 0x8F and r[3] == feat_idx and r[4] == tag:
+                    raise HidppError(r[5])  # HID++ 1.0 / receiver error
+        raise HidppTimeout()
+
+    def feature_index(self, dev, feature):
+        """Index of a feature on this device (root feature, getFeature), or None if absent."""
+        return self.request(dev, 0x00, 0, (feature >> 8, feature & 0xFF))[0] or None
+
+
+def _voltage_percent(mv):
+    if mv >= _VOLTAGE_CURVE[0][0]:
+        return 100
+    for (hi_mv, hi_pct), (lo_mv, lo_pct) in zip(_VOLTAGE_CURVE, _VOLTAGE_CURVE[1:]):
+        if mv >= lo_mv:
+            return round(lo_pct + (hi_pct - lo_pct) * (mv - lo_mv) / (hi_mv - lo_mv))
+    return 0
+
+
+def _hidpp_name(ch, dev):
+    idx = ch.feature_index(dev, FEAT_NAME)
+    if not idx:
+        return None
+    length = ch.request(dev, idx, 0)[0]  # getCount
+    name = bytearray()
+    while len(name) < length:
+        chunk = ch.request(dev, idx, 1, (len(name),))  # getDeviceName(offset), 16 chars at a time
+        name += bytes(chunk[:length - len(name)])
+    return name.decode("utf-8", "replace").strip("\0 ") or None
+
+
+def _hidpp_probe(ch, dev):
+    """Works out once per device which battery feature it has. {"skip": why} = no icon."""
+    try:
+        protocol = ch.request(dev, 0x00, 1, (0, 0, 0x5A))[0]  # root ping -> protocol major
+    except HidppError as e:
+        if e.code == HIDPP10_ERR_INVALID_SUBID:
+            return {"skip": "HID++ 1.0 device, not supported"}
+        raise  # anything else: slot empty or device unreachable right now
+    if protocol < 2:
+        return {"skip": f"HID++ {protocol}.x device, not supported"}
+    for feature in (FEAT_UNIFIED_BATTERY, FEAT_BATTERY_STATUS, FEAT_BATTERY_VOLTAGE):
+        idx = ch.feature_index(dev, feature)
+        if idx:
+            break
+    else:
+        return {"skip": "no battery feature (wired-only device?)"}
+    name = _hidpp_name(ch, dev) or "device"
+    info = {"feature": feature, "index": idx, "soc": True,
+            "name": name if name.lower().startswith("logitech") else f"Logitech {name}"}
+    if feature == FEAT_UNIFIED_BATTERY:
+        caps = ch.request(dev, idx, 0)  # getCapabilities
+        info["soc"] = bool(caps[1] & 0x02)  # does it report a real %, or only a level?
+    return info
+
+
+def _hidpp_battery(ch, dev, info, via):
+    feature, idx = info["feature"], info["index"]
+    if feature == FEAT_UNIFIED_BATTERY:
+        r = ch.request(dev, idx, 1)  # getStatus
+        soc, levels, charge = r[0], r[1], r[2]
+        charging = charge in (1, 2, 3)  # charging, slow charging, full and still plugged in
+        if info["soc"]:
+            return Reading("ok", min(100, soc), charging, via)
+        for bit, word, pct in _UNIFIED_LEVELS:
+            if levels & bit:
+                return Reading("ok", pct, charging, via, coarse=word)
+        return Reading("error", detail=f"no battery level (flags 0x{levels:02x})")
+    if feature == FEAT_BATTERY_STATUS:
+        r = ch.request(dev, idx, 0)  # getBatteryLevelStatus
+        pct, status = r[0], r[2]
+        if status >= 5:  # invalid battery, thermal error, other charging error
+            return Reading("error", detail=f"battery status {status}")
+        return Reading("ok", min(100, pct), status in (1, 2, 3, 4), via)
+    r = ch.request(dev, idx, 0)  # FEAT_BATTERY_VOLTAGE: getBatteryInfo
+    mv, flags = (r[0] << 8) | r[1], r[2]
+    return Reading("ok", _voltage_percent(mv), bool(flags & 0x80), via, approx=True)
+
+
+_logi_probe: dict[str, dict] = {}  # device key -> what _hidpp_probe found
+_logi_names: dict[str, str] = {}   # devices seen this run: show them as asleep instead of vanishing
+
+
+def _hid_interface_id(path_text):
+    """Windows gives each top-level collection of one USB interface its own path, e.g.
+      \\\\?\\HID#VID_046D&PID_C52B&MI_02&Col01#7&2a3b4c5d&0&0000#{guid}
+      \\\\?\\HID#VID_046D&PID_C52B&MI_02&Col02#7&2a3b4c5d&0&0001#{guid}
+    Dropping the collection number, the per-collection instance suffix and anything after
+    the GUID (some end in \\KBD) leaves an id they share."""
+    t = re.sub(r"&col[0-9a-f]+", "", path_text, flags=re.I)
+    t = re.sub(r"&[0-9a-f]{4}(?=#\{)", "", t, flags=re.I)
+    return re.sub(r"(\{[^}]*\}).*$", r"\1", t).lower()
+
+
+def _logi_interfaces():
+    """HID++ collections of USB-connected Logitech receivers/devices, grouped per interface."""
+    groups = {}
+    for info in hid.enumerate(LOGI_VID, 0):
+        path = info["path"]
+        text = path.decode(errors="replace") if isinstance(path, bytes) else path
+        if "VID_046D&PID_" not in text.upper():
+            continue  # Bluetooth-connected: the Bluetooth source covers whatever Windows reports
+        if info["usage_page"] not in HIDPP_PAGES or info["usage"] & 0xFF not in (1, 2):
+            continue
+        g = groups.setdefault(_hid_interface_id(text), {"pid": info["product_id"]})
+        g["long" if info["usage"] & 0xFF == 2 else "short"] = path
+    return groups
+
+
+def find_logitech():
+    out = []
+    for group, g in _logi_interfaces().items():
+        if "long" not in g:
+            continue
+        receiver = g["pid"] in LOGI_RECEIVER_PIDS
+        via = "receiver" if receiver else "USB"
+        base = f"logi:{g['pid']:04x}:{zlib.crc32(group.encode()):08x}"
+        try:
+            ch = _HidppChannel(g["long"], g.get("short"))
+        except OSError as e:
+            log.warning("Logitech %04x: can't open HID++ interface (%s)", g["pid"], e)
+            continue
+        try:
+            for dev in (HIDPP_RECEIVER_SLOTS if receiver else (HIDPP_DIRECT,)):
+                key = f"{base}:{dev}"
+                try:
+                    info = _logi_probe.get(key)
+                    if info is None:
+                        info = _logi_probe[key] = _hidpp_probe(ch, dev)
+                        log.info("Logitech %04x slot %s: %s [untested support]", g["pid"], dev,
+                                 info.get("skip") or f"{info['name']}, feature {info['feature']:04x}")
+                    if "skip" in info:
+                        continue
+                    reading = _hidpp_battery(ch, dev, info, via)
+                    _logi_names[key] = info["name"]
+                    out.append(Found(key, info["name"], reading))
+                except (HidppError, HidppTimeout):
+                    if key in _logi_names:  # known device that stopped answering: asleep/off
+                        out.append(Found(key, _logi_names[key], Reading("asleep")))
+        finally:
+            ch.close()
+    # A wireless mouse plugged in to charge shows up twice: on its cable (answering) and in
+    # its receiver slot (asleep). Keep the one that answers.
+    on_cable = {f.name for f in out if f.key.endswith(f":{HIDPP_DIRECT}")}
+    return [f for f in out if not (f.reading.state == "asleep" and f.name in on_cable
+                                   and not f.key.endswith(f":{HIDPP_DIRECT}"))]
+
+
+PROVIDERS = (("Lamzu", find_lamzu), ("Bluetooth", find_bluetooth), ("Xbox", find_xbox),
+             ("Logitech", find_logitech))
 
 
 def find_all():
@@ -390,7 +627,7 @@ def tooltip_for(name, r: Reading, last: Reading | None, last_time):
         elif r.charging:
             text = f"{name}: ~{r.percent}% (charging, approximate)"
         else:
-            text = f"{name}: {r.percent}% ({r.via})"
+            text = f"{name}: {'~' if r.approx else ''}{r.percent}% ({r.via})"
     elif r.state == "asleep":
         text = f"{name}: asleep or off"
         if last and last.percent is not None:

@@ -9,6 +9,7 @@ Supported sources:
 - **Lamzu mice** over the 2.4 GHz dongle or USB cable (vendor protocol, see below)
 - **Bluetooth devices** that report battery to Windows: headsets, earbuds, mice, keyboards. These are the same values shown in *Settings → Bluetooth & devices*.
 - **Xbox controllers** via XInput. Windows only gives four levels (empty / low / medium / full), so these icons show a bar with no number.
+- **Logitech devices** on a Unifying, Lightspeed or Bolt receiver, or plugged in by USB (HID++ 2.0). ⚠️ **Untested:** written from the public protocol documentation without Logitech hardware. See [Compatibility](#compatibility).
 
 An icon appears when a device connects and disappears when it disconnects. If nothing is found, a single `?` icon stays so you still have the menu.
 
@@ -103,7 +104,24 @@ Things I found along the way:
 
 ## Compatibility
 
-Tested on Windows 11 with a **Lamzu Maya X 8K** dongle and **EDIFIER X3 Lite** Bluetooth earbuds. The Xbox source uses the standard XInput API but hasn't been tested on hardware yet. A Bluetooth device only shows up if it reports its battery to Windows (if *Settings → Bluetooth & devices* shows a %, it will). Other 2.4 GHz mice (Logitech, Razer, etc.) each use their own protocol and would need their own reader like the Lamzu one.
+| Source | Status |
+|---|---|
+| Lamzu Maya X 8K (dongle + cable) | ✅ Tested |
+| Bluetooth devices | ✅ Tested with EDIFIER X3 Lite earbuds |
+| Xbox controllers | ⚠️ Untested: standard XInput API |
+| Logitech (HID++ 2.0) | ⚠️ Untested: written from documentation, checked only against a simulator |
+
+A Bluetooth device only shows up if it reports its battery to Windows. If *Settings → Bluetooth & devices* shows a %, it will. Other brands' 2.4 GHz mice (Razer, SteelSeries, etc.) each use their own protocol and would need their own reader like the Lamzu one.
+
+### Logitech: help test it
+
+The Logitech reader follows the HID++ 2.0 protocol as documented by Logitech and implemented by [Solaar](https://github.com/pwr-Solaar/Solaar). It reads battery features `0x1004` (unified battery), `0x1000` (battery status) or `0x1001` (voltage, shown as an approximate `~%`). `tests\hidpp_simulator.py` checks the logic against simulated receivers, but it has never run against a real Logitech device. Expected limits:
+
+- Old (pre-2012) HID++ 1.0 devices aren't supported.
+- Logitech devices connected by **Bluetooth** go through the Bluetooth source instead, and only show if Windows reports their battery.
+- G HUB or Logi Options+ running at the same time should be fine, since replies are tagged, but this is untested.
+
+If you have a Logitech mouse or keyboard, please [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) saying whether it worked. Include the output of `python battery_tray.pyw --once` and the `Logitech …` lines from the log (tray menu → *Open log folder*).
 
 Other Lamzu mice that use the same web hub may use the same protocol with different product IDs. If you try one, [open an issue](https://github.com/wachirawit-kaewdang/battery-tray/issues) with the output of:
 
